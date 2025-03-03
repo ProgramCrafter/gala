@@ -129,12 +129,15 @@ public class Gala.DesktopIntegration : GLib.Object {
 
     public void focus_window (uint64 uid) throws GLib.DBusError, GLib.IOError {
         var apps = Gala.AppSystem.get_default ().get_running_apps ();
+        info ("focus_window requested of gala's DesktopIntegration");
         foreach (unowned var app in apps) {
             foreach (weak Meta.Window window in app.get_windows ()) {
                 if (window.get_id () == uid) {
+                    info ("The appropriate window was found.");
                     if (window.has_focus ()) {
                         notify_already_focused (window);
                     } else {
+                        info ("The window did not have focus so activating it now.");
                         window.get_workspace ().activate_with_focus (window, wm.get_display ().get_current_time ());
                     }
                 }
@@ -165,41 +168,10 @@ public class Gala.DesktopIntegration : GLib.Object {
         return wm.get_display ().get_workspace_manager ().get_active_workspace_index ();
     }
 
-    private bool notifying = false;
+    private bool notifying = false;  // may be required for ABI compatibility?
     private void notify_already_focused (Meta.Window window) {
-        if (notifying) {
-            return;
-        }
-
-        notifying = true;
-
-        wm.get_display ().get_sound_player ().play_from_theme ("bell", _("Window has already focus"), null);
-
-        if (window.get_maximized () == BOTH) {
-            notifying = false;
-            return;
-        }
-
-        var transition = new Clutter.KeyframeTransition ("translation-x") {
-            repeat_count = 5,
-            duration = 100,
-            remove_on_complete = true
-        };
-        transition.set_from_value (0);
-        transition.set_to_value (0);
-        transition.set_key_frames ( { 0.5, -0.5 } );
-
-        var offset = InternalUtils.scale_to_int (15, wm.get_display ().get_monitor_scale (window.get_monitor ()));
-        transition.set_values ( { -offset, offset });
-
-        transition.stopped.connect (() => {
-            notifying = false;
-            wm.get_display ().enable_unredirect ();
-        });
-
-        wm.get_display ().disable_unredirect ();
-
-        ((Meta.WindowActor) window.get_compositor_private ()).add_transition ("notify-already-focused", transition);
+        info ("Requested to bounce an already-focused window. Minimizing it instead.");
+        window.minimize ();
     }
 
     public void show_windows_for (string app_id) throws IOError, DBusError {
