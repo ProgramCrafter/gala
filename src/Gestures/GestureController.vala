@@ -33,26 +33,36 @@ public class Gala.GestureController : Object {
     private const double MAX_VELOCITY = 0.01;
 
     public GestureAction action { get; construct; }
+    public WindowManager wm { get; construct; }
 
-    private GestureTarget? _target;
-    public GestureTarget target {
+    private unowned RootTarget? _target;
+    public RootTarget target {
         get { return _target; }
-        set {
+        private set {
             _target = value;
-            target.propagate (UPDATE, action, calculate_bounded_progress ());
+            _target.propagate (UPDATE, action, progress);
         }
     }
+
+    private Variant? _action_info;
+    public Variant? action_info { get { return _action_info; } }
 
     public double distance { get; construct set; }
     public double overshoot_lower_clamp { get; construct set; default = 0d; }
     public double overshoot_upper_clamp { get; construct set; default = 1d; }
+
+    /**
+     * When disabled gesture progress will stay where the gesture ended and not snap to full integers values.
+     * This will also cause the controller to emit smooth progress information even if animations are disabled.
+     */
+    public bool snap { get; construct set; default = true; }
 
     private double _progress = 0;
     public double progress {
         get { return _progress; }
         set {
             _progress = value;
-            target.propagate (UPDATE, action, calculate_bounded_progress ());
+            target.propagate (UPDATE, action, value);
         }
     }
 
@@ -71,32 +81,30 @@ public class Gala.GestureController : Object {
     private ScrollBackend? scroll_backend;
 
     private GestureBackend? recognizing_backend;
+    private double gesture_progress;
     private double previous_percentage;
     private uint64 previous_time;
     private double previous_delta;
     private double velocity;
     private int direction_multiplier;
 
-    private Clutter.Timeline? timeline;
+    private SpringTimeline? timeline;
 
-    public GestureController (GestureAction action, GestureTarget target) {
-        Object (action: action, target: target);
+    public GestureController (GestureAction action, WindowManager wm) {
+        Object (action: action, wm: wm);
     }
 
-    private double calculate_bounded_progress () {
-        var lower_clamp_int = (int) overshoot_lower_clamp;
-        var upper_clamp_int = (int) overshoot_upper_clamp;
+    /**
+     * Do not call this directly, use {@link RooTarget.add_controller} instead.
+     */
+    public void attached (RootTarget target) {
+        ref ();
+        this.target = target;
+    }
 
-        double stretched_percentage = 0;
-        if (_progress < lower_clamp_int) {
-            stretched_percentage = (_progress - lower_clamp_int) * - (overshoot_lower_clamp - lower_clamp_int);
-        } else if (_progress > upper_clamp_int) {
-            stretched_percentage = (_progress - upper_clamp_int) * (overshoot_upper_clamp - upper_clamp_int);
-        }
-
-        var clamped = _progress.clamp (lower_clamp_int, upper_clamp_int);
-
-        return clamped + stretched_percentage;
+    public void detached () {
+        _target = null;
+        unref ();
     }
 
     public void enable_touchpad () {
@@ -121,24 +129,25 @@ public class Gala.GestureController : Object {
             timeline = null;
         }
 
-        target.propagate (START, action, calculate_bounded_progress ());
+        target.propagate (START, action, progress);
     }
 
     private bool gesture_detected (GestureBackend backend, Gesture gesture, uint32 timestamp) {
-        recognizing = enabled && (GestureSettings.get_action (gesture) == action
-            || backend == scroll_backend && GestureSettings.get_action (gesture) == NONE);
+        var recognized_action = GestureSettings.get_action (gesture, out _action_info);
+        recognizing = enabled && (!wm.filter_action (recognized_action) && recognized_action == action ||
+            backend == scroll_backend && recognized_action == NONE);
 
         if (recognizing) {
-            if (gesture.direction == UP || gesture.direction == RIGHT) {
+            if (gesture.direction == UP || gesture.direction == RIGHT || gesture.direction == OUT) {
                 direction_multiplier = 1;
             } else {
                 direction_multiplier = -1;
             }
 
-            if (!AnimationsSettings.get_enable_animations ()) {
+            if (snap && !Meta.Prefs.get_gnome_animations ()) {
+                recognizing = false;
                 prepare ();
                 finish (0, progress + direction_multiplier);
-                recognizing = false;
             }
 
             recognizing_backend = backend;
@@ -154,6 +163,7 @@ public class Gala.GestureController : Object {
 
         prepare ();
 
+        gesture_progress = progress;
         previous_percentage = percentage;
         previous_time = elapsed_time;
     }
@@ -176,7 +186,7 @@ public class Gala.GestureController : Object {
             }
         }
 
-        progress += calculate_applied_delta (percentage, updated_delta);
+        update_gesture_progress (percentage, updated_delta);
 
         previous_percentage = percentage;
         previous_time = elapsed_time;
@@ -188,18 +198,23 @@ public class Gala.GestureController : Object {
             return;
         }
 
-        progress += calculate_applied_delta (percentage, previous_delta);
+        recognizing = false;
+
+        update_gesture_progress (percentage, previous_delta);
 
         var to = progress;
 
-        if (velocity.abs () > SUCCESS_VELOCITY_THRESHOLD) {
-            to += (velocity > 0 ? direction_multiplier : -direction_multiplier) * 0.5;
+        if (snap) {
+            if (velocity.abs () > SUCCESS_VELOCITY_THRESHOLD) {
+                to += (velocity > 0 ? direction_multiplier : -direction_multiplier) * 0.5;
+            }
+
+            to = Math.round (to);
         }
 
-        recognizing = false;
+        finish (velocity * direction_multiplier, to);
 
-        finish (velocity, Math.round (to));
-
+        gesture_progress = 0;
         previous_percentage = 0;
         previous_time = 0;
         previous_delta = 0;
@@ -207,8 +222,22 @@ public class Gala.GestureController : Object {
         direction_multiplier = 0;
     }
 
-    private inline double calculate_applied_delta (double percentage, double percentage_delta) {
-        return ((percentage - percentage_delta) - (previous_percentage - previous_delta)) * direction_multiplier;
+    private void update_gesture_progress (double percentage, double percentage_delta) {
+        gesture_progress += ((percentage - percentage_delta) - (previous_percentage - previous_delta)) * direction_multiplier;
+
+        var lower_clamp_int = (int) overshoot_lower_clamp;
+        var upper_clamp_int = (int) overshoot_upper_clamp;
+
+        double stretched_percentage = 0;
+        if (gesture_progress < lower_clamp_int) {
+            stretched_percentage = (gesture_progress - lower_clamp_int) * - (overshoot_lower_clamp - lower_clamp_int);
+        } else if (gesture_progress > upper_clamp_int) {
+            stretched_percentage = (gesture_progress - upper_clamp_int) * (overshoot_upper_clamp - upper_clamp_int);
+        }
+
+        var clamped = gesture_progress.clamp (lower_clamp_int, upper_clamp_int);
+
+        progress = clamped + stretched_percentage;
     }
 
     private void finish (double velocity, double to) {
@@ -217,24 +246,30 @@ public class Gala.GestureController : Object {
         target.propagate (COMMIT, action, clamped_to);
 
         if (progress == to) {
-            target.propagate (END, action, calculate_bounded_progress ());
+            finished ();
             return;
         }
 
-        if (!AnimationsSettings.get_enable_animations ()) {
+        if (!Meta.Prefs.get_gnome_animations ()) {
             progress = clamped_to;
-            target.propagate (END, action, calculate_bounded_progress ());
+            finished ();
             return;
         }
 
-        var spring = new SpringTimeline (target.actor, progress, clamped_to, velocity, 1, 1, 1000);
+        var spring = new SpringTimeline (target.actor, progress, clamped_to, velocity, 1, 1, 500);
         spring.progress.connect ((value) => progress = value);
-        spring.stopped.connect (() => {
-            target.propagate (END, action, calculate_bounded_progress ());
-            timeline = null;
-        });
+        spring.stopped.connect_after (finished);
 
         timeline = spring;
+    }
+
+    private void finished (bool is_finished = true) {
+        target.propagate (END, action, progress);
+        timeline = null;
+
+        if (is_finished) {
+            _action_info = null;
+        }
     }
 
     /**
@@ -244,12 +279,15 @@ public class Gala.GestureController : Object {
      * If you don't want animation but an immediate jump, you should set {@link progress} directly.
      */
     public void goto (double to) {
-        if (progress == to || recognizing) {
+        var clamped_to = to.clamp ((int) overshoot_lower_clamp, (int) overshoot_upper_clamp);
+        if (progress == to || recognizing ||
+            timeline != null && clamped_to == timeline.value_to // Only allow overshoot if there's no ongoing overshoot animation to prevent stacking
+        ) {
             return;
         }
 
         prepare ();
-        finish (0.005, to);
+        finish ((to > progress ? 1 : -1) * 1, to);
     }
 
     public void cancel_gesture () {

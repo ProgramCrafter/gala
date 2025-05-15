@@ -3,7 +3,7 @@
  * SPDX-FileCopyrightText: 2020, 2025 elementary, Inc. (https://elementary.io)
  */
 
-public class Gala.ScreenShield : Clutter.Actor {
+public class Gala.SessionLocker : Clutter.Actor {
     [DBus (name = "org.freedesktop.login1.Manager")]
     private interface LoginManager : Object {
         public signal void prepare_for_sleep (bool about_to_suspend);
@@ -92,7 +92,7 @@ public class Gala.ScreenShield : Clutter.Actor {
 
     private bool connected_to_buses = false;
 
-    public ScreenShield (WindowManager wm) {
+    public SessionLocker (WindowManager wm) {
         Object (wm: wm);
     }
 
@@ -330,7 +330,7 @@ public class Gala.ScreenShield : Clutter.Actor {
         grab_key_focus ();
         modal_proxy = wm.push_modal (this);
 
-        if (AnimationsSettings.get_enable_animations () && animate) {
+        if (Meta.Prefs.get_gnome_animations () && animate) {
             animate_and_lock (animation_time);
         } else {
             _set_active (true);

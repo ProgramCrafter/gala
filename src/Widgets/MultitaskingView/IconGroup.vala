@@ -168,7 +168,7 @@ public class Gala.IconGroup : CanvasActor {
                 if (animate) {
                     icon.save_easing_state ();
                     icon.set_easing_mode (Clutter.AnimationMode.LINEAR);
-                    icon.set_easing_duration (AnimationsSettings.get_animation_duration (200));
+                    icon.set_easing_duration (Utils.get_animation_duration (200));
                     icon.opacity = 0;
                     icon.restore_easing_state ();
 
@@ -235,9 +235,8 @@ public class Gala.IconGroup : CanvasActor {
             InternalUtils.scale_to_int (5, scale_factor)
         );
 
-        var shadow_effect = new ShadowEffect () {
-            border_radius = InternalUtils.scale_to_int (5, scale_factor),
-            scale_factor = scale_factor
+        var shadow_effect = new ShadowEffect ("", scale_factor) {
+            border_radius = InternalUtils.scale_to_int (5, scale_factor)
         };
 
         var style_manager = Drawing.StyleManager.get_instance ();

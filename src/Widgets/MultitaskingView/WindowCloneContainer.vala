@@ -16,21 +16,10 @@ public class Gala.WindowCloneContainer : ActorTarget {
     public int padding_right { get; set; default = 12; }
     public int padding_bottom { get; set; default = 12; }
 
-    public Meta.Display display { get; construct; }
+    public WindowManager wm { get; construct; }
     public bool overview_mode { get; construct; }
 
-    private float _monitor_scale = 1.0f;
-    public float monitor_scale {
-        get {
-            return _monitor_scale;
-        }
-        set {
-            if (value != _monitor_scale) {
-                _monitor_scale = value;
-                reallocate ();
-            }
-        }
-    }
+    public float monitor_scale { get; construct set; }
 
     private bool opened = false;
 
@@ -40,15 +29,8 @@ public class Gala.WindowCloneContainer : ActorTarget {
      */
     private unowned WindowClone? current_window = null;
 
-    public WindowCloneContainer (Meta.Display display, float scale, bool overview_mode = false) {
-        Object (display: display, monitor_scale: scale, overview_mode: overview_mode);
-    }
-
-    private void reallocate () {
-        foreach (unowned var child in get_children ()) {
-            unowned var clone = (WindowClone) child;
-            clone.monitor_scale_factor = monitor_scale;
-        }
+    public WindowCloneContainer (WindowManager wm, float monitor_scale, bool overview_mode = false) {
+        Object (wm: wm, monitor_scale: monitor_scale, overview_mode: overview_mode);
     }
 
     /**
@@ -64,15 +46,16 @@ public class Gala.WindowCloneContainer : ActorTarget {
         }
         windows.append (window);
 
+        unowned var display = wm.get_display ();
         var windows_ordered = InternalUtils.sort_windows (display, windows);
 
-        var new_window = new WindowClone (display, window, monitor_scale, overview_mode);
+        var new_window = new WindowClone (wm, window, monitor_scale, overview_mode);
 
         new_window.selected.connect ((clone) => window_selected (clone.window));
         new_window.destroy.connect ((_new_window) => {
             // make sure to release reference if the window is selected
             if (_new_window == current_window) {
-                select_next_window (Meta.MotionDirection.RIGHT);
+                select_next_window (Meta.MotionDirection.RIGHT, false);
             }
 
             // if window is still selected, reset the selection
@@ -83,6 +66,8 @@ public class Gala.WindowCloneContainer : ActorTarget {
             reflow (false);
         });
         new_window.request_reposition.connect (() => reflow (false));
+
+        bind_property ("monitor-scale", new_window, "monitor-scale");
 
         unowned Meta.Window? target = null;
         foreach (unowned var w in windows_ordered) {
@@ -127,6 +112,8 @@ public class Gala.WindowCloneContainer : ActorTarget {
      * during animations correct.
      */
     private void restack_windows () {
+        unowned var display = wm.get_display ();
+
         var children = get_children ();
 
         var windows = new List<Meta.Window> ();
@@ -178,11 +165,7 @@ public class Gala.WindowCloneContainer : ActorTarget {
             return (int) (seq_b - seq_a);
         });
 
-#if HAS_MUTTER45
         Mtk.Rectangle area = {
-#else
-        Meta.Rectangle area = {
-#endif
             padding_left,
             padding_top,
             (int)width - padding_left - padding_right,
@@ -201,11 +184,7 @@ public class Gala.WindowCloneContainer : ActorTarget {
      * Collect key events, mainly for redirecting them to the WindowCloneContainers to
      * select the active window.
      */
-#if HAS_MUTTER45
     public override bool key_press_event (Clutter.Event event) {
-#else
-    public override bool key_press_event (Clutter.KeyEvent event) {
-#endif
         if (!opened) {
             return Clutter.EVENT_PROPAGATE;
         }
@@ -215,16 +194,16 @@ public class Gala.WindowCloneContainer : ActorTarget {
                 requested_close ();
                 break;
             case Clutter.Key.Down:
-                select_next_window (Meta.MotionDirection.DOWN);
+                select_next_window (Meta.MotionDirection.DOWN, true);
                 break;
             case Clutter.Key.Up:
-                select_next_window (Meta.MotionDirection.UP);
+                select_next_window (Meta.MotionDirection.UP, true);
                 break;
             case Clutter.Key.Left:
-                select_next_window (Meta.MotionDirection.LEFT);
+                select_next_window (Meta.MotionDirection.LEFT, true);
                 break;
             case Clutter.Key.Right:
-                select_next_window (Meta.MotionDirection.RIGHT);
+                select_next_window (Meta.MotionDirection.RIGHT, true);
                 break;
             case Clutter.Key.Return:
             case Clutter.Key.KP_Enter:
@@ -243,10 +222,12 @@ public class Gala.WindowCloneContainer : ActorTarget {
      *
      * @param direction The MetaMotionDirection in which to search for windows for.
      */
-    public void select_next_window (Meta.MotionDirection direction) {
+    public void select_next_window (Meta.MotionDirection direction, bool user_action) {
         if (get_n_children () < 1) {
             return;
         }
+
+        unowned var display = wm.get_display ();
 
         WindowClone? closest = null;
 
@@ -326,7 +307,7 @@ public class Gala.WindowCloneContainer : ActorTarget {
         }
 
         if (closest == null) {
-            if (current_window != null) {
+            if (current_window != null && user_action) {
                 InternalUtils.bell_notify (display);
                 current_window.active = true;
             }
@@ -337,7 +318,10 @@ public class Gala.WindowCloneContainer : ActorTarget {
             current_window.active = false;
         }
 
-        closest.active = true;
+        if (user_action) {
+            closest.active = true;
+        }
+
         current_window = closest;
     }
 
@@ -354,11 +338,11 @@ public class Gala.WindowCloneContainer : ActorTarget {
     }
 
     public override void start_progress (GestureAction action) {
-        if (action != MULTITASKING_VIEW) {
-            return;
-        }
-
         if (!opened) {
+            opened = true;
+
+            unowned var display = wm.get_display ();
+
             if (current_window != null) {
                 current_window.active = false;
             }
@@ -370,19 +354,26 @@ public class Gala.WindowCloneContainer : ActorTarget {
                     break;
                 }
             }
+
+            restack_windows ();
+            reflow (true);
+        } else if (action == MULTITASKING_VIEW) { // If we are open we only want to restack when we close
+            restack_windows ();
         }
-
-        opened = true;
-
-        restack_windows ();
-        reflow (true);
     }
 
     public override void commit_progress (GestureAction action, double to) {
-        if (action != MULTITASKING_VIEW) {
-            return;
-        }
+        switch (action) {
+            case MULTITASKING_VIEW:
+                opened = to > 0.5;
+                break;
 
-        opened = to > 0.5;
+            case SWITCH_WORKSPACE:
+                opened = get_current_commit (MULTITASKING_VIEW) > 0.5;
+                break;
+
+            default:
+                break;
+        }
     }
 }

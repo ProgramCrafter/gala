@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-public class Gala.WindowOverview : ActorTarget, ActivatableComponent {
+public class Gala.WindowOverview : ActorTarget, RootTarget, ActivatableComponent {
     private const int BORDER = 10;
     private const int TOP_GAP = 30;
     private const int BOTTOM_GAP = 100;
@@ -26,17 +26,14 @@ public class Gala.WindowOverview : ActorTarget, ActivatableComponent {
     construct {
         visible = false;
         reactive = true;
-        gesture_controller = new GestureController (MULTITASKING_VIEW, this) {
+        gesture_controller = new GestureController (MULTITASKING_VIEW, wm) {
             enabled = false
         };
+        add_gesture_controller (gesture_controller);
     }
 
 
-#if HAS_MUTTER45
     public override bool key_press_event (Clutter.Event event) {
-#else
-    public override bool key_press_event (Clutter.KeyEvent event) {
-#endif
         if (!is_opened ()) {
             return Clutter.EVENT_PROPAGATE;
         }
@@ -44,11 +41,7 @@ public class Gala.WindowOverview : ActorTarget, ActivatableComponent {
         return window_clone_container.key_press_event (event);
     }
 
-#if HAS_MUTTER45
     public override bool button_release_event (Clutter.Event event) {
-#else
-    public override bool button_release_event (Clutter.ButtonEvent event) {
-#endif
         if (event.get_button () == Clutter.Button.PRIMARY) {
             close ();
         }
@@ -121,6 +114,7 @@ public class Gala.WindowOverview : ActorTarget, ActivatableComponent {
 
         modal_proxy = wm.push_modal (this);
         modal_proxy.set_keybinding_filter (keybinding_filter);
+        modal_proxy.allow_actions ({ ZOOM });
 
         unowned var display = wm.get_display ();
 
@@ -128,7 +122,7 @@ public class Gala.WindowOverview : ActorTarget, ActivatableComponent {
             var geometry = display.get_monitor_geometry (i);
             var scale = display.get_monitor_scale (i);
 
-            window_clone_container = new WindowCloneContainer (display, scale, true) {
+            window_clone_container = new WindowCloneContainer (wm, scale, true) {
                 padding_top = TOP_GAP,
                 padding_left = BORDER,
                 padding_right = BORDER,
@@ -174,8 +168,6 @@ public class Gala.WindowOverview : ActorTarget, ActivatableComponent {
 
         switch (binding.get_name ()) {
             case "expose-all-windows":
-            case "zoom-in":
-            case "zoom-out":
                 return false;
             default:
                 break;
